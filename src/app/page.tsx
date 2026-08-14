@@ -1,4 +1,4 @@
-import { ApiPlayground } from "@/components/api-playground";
+import { DemoExperience } from "@/components/demo-experience";
 
 export default function LandingPage() {
   // Demo mode is local-only: when a demo key exists in the environment, the
@@ -41,7 +41,7 @@ export default function LandingPage() {
       </section>
 
       {demoKey && (
-        <ApiPlayground
+        <DemoExperience
           demoKey={demoKey}
           demoEmail={process.env.DEMO_EMAIL ?? "demo@demo.com"}
           demoPassword={process.env.DEMO_PASSWORD ?? "demo123456"}

@@ -20,14 +20,20 @@ export function ApiPlayground({
   demoKey,
   demoEmail,
   demoPassword,
+  initialKey = "",
+  initialPath = "sms/messages",
+  examples = [],
 }: {
   demoKey: string;
   demoEmail: string;
   demoPassword: string;
+  initialKey?: string;
+  initialPath?: string;
+  examples?: string[];
 }) {
-  const [key, setKey] = useState("");
+  const [key, setKey] = useState(initialKey);
   const [method, setMethod] = useState("POST");
-  const [path, setPath] = useState("sms/messages");
+  const [path, setPath] = useState(initialPath);
   const [body, setBody] = useState(DEFAULT_BODY);
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
@@ -111,6 +117,26 @@ export function ApiPlayground({
               </button>
             </div>
           </div>
+
+          {examples.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-400">Try a function:</span>
+              {examples.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => setPath(example)}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                    path === example
+                      ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                      : "border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  {example.replace(/^[^/]+\//, "")}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Method + path */}
           <div className="flex flex-wrap gap-2">
