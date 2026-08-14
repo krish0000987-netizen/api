@@ -3,12 +3,9 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "../src/generated/prisma/client";
-import { PrismaNeon } from "@prisma/adapter-neon";
+import { getPrismaAdapter } from "../src/lib/db-adapter";
 
-const adapter = new PrismaNeon({
-  connectionString: process.env.DATABASE_URL!,
-});
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient({ adapter: getPrismaAdapter(process.env.DATABASE_URL!) });
 
 async function main() {
   const email = (process.env.ADMIN_EMAIL ?? "").trim().toLowerCase();

@@ -1,11 +1,10 @@
 import { PrismaClient } from "@/generated/prisma/client";
-import { PrismaNeon } from "@prisma/adapter-neon";
+import { getPrismaAdapter } from "@/lib/db-adapter";
 
-// Prisma 7 + Neon serverless driver adapter. DATABASE_URL is the *pooled*
-// connection string from Neon, ideal for serverless functions.
-const adapter = new PrismaNeon({
-  connectionString: process.env.DATABASE_URL!,
-});
+// DATABASE_URL is the *pooled* Neon connection string in production (or a
+// local Postgres URL during development). Local hosts use the classic pg
+// driver; Neon hosts use the serverless driver.
+const adapter = getPrismaAdapter(process.env.DATABASE_URL!);
 
 // Singleton so serverless functions reuse the same client across warm
 // invocations instead of exhausting database connections.
