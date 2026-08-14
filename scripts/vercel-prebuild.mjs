@@ -2,7 +2,7 @@
 // Loads .env for local runs; on Vercel the variables come from the project
 // environment (dotenv never overrides existing env vars, and there is no
 // .env file in the deployment anyway).
-require("dotenv").config();
+import "dotenv/config";
 
 // Preflight checks for Vercel production builds.
 //
