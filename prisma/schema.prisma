@@ -1,0 +1,131 @@
+// White-Label API Reseller Platform — Prisma schema
+// Starting point from the master build prompt, plus the audit-log table
+// and the fields the spec requires for fallback priority and saved layouts.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7+: the connection URL lives in prisma.config.ts (for the CLI)
+// and in the Neon adapter (for the app), not in this datasource block.
+datasource db {
+  provider = "postgresql"
+}
+
+model Vendor {
+  id              String      @id @default(cuid())
+  name            String
+  // URL slug used by the proxy gateway, e.g. "/api/v1/sms/..." -> vendor "sms".
+  slug            String      @unique
+  sandboxEndpoint String
+  sandboxKeyEnc   String
+  // Non-reversible fingerprint (sha256 prefix) used only for masked display.
+  sandboxKeyFingerprint String
+  liveEndpoint    String
+  liveKeyEnc      String
+  liveKeyFingerprint    String
+  // Drag-to-reorder priority: lower number = tried first when a route has
+  // multiple fallback vendors configured.
+  priority        Int         @default(0)
+  enabled         Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  usageEvents     UsageEvent[]
+  integrations    CustomerIntegration[]
+}
+
+model Admin {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  // JSON array of widget ids in the admin's preferred order (dnd-kit).
+  dashboardLayout String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Customer {
+  id               String       @id @default(cuid())
+  email            String       @unique
+  name             String?
+  // Only for email/password sign-in (Google-only accounts have none).
+  passwordHash     String?
+  // bcrypt hash of the branded API key (sk_test_... / sk_live_...). The full
+  // key is shown to the customer once and never stored in plaintext.
+  apiKeyHash       String
+  // sha256 of the API key, indexed so the proxy gateway can find the customer
+  // by key in O(1) before verifying with bcrypt.
+  apiKeyLookup     String?      @unique
+  // Masked display string, e.g. "sk_test_...aB3f".
+  apiKeyPrefix     String?
+  apiKeyRevoked    Boolean      @default(false)
+  mode             String       @default("sandbox") // "sandbox" | "live"
+  plan             String       @default("free")
+  stripeCustomerId String?
+  // JSON array of widget ids in the customer's preferred order (dnd-kit).
+  dashboardLayout  String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  usageEvents      UsageEvent[]
+  dailyUsage       DailyUsage[]
+  integrations     CustomerIntegration[]
+}
+
+// A vendor service enabled on a customer's account (the Integration Builder).
+model CustomerIntegration {
+  id         String   @id @default(cuid())
+  customerId String
+  vendorId   String
+  enabled    Boolean  @default(true)
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vendor     Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, vendorId])
+}
+
+// Nightly aggregation of Redis usage counters (historical reporting/billing).
+model DailyUsage {
+  id         String   @id @default(cuid())
+  customerId String
+  mode       String
+  date       DateTime @db.Date
+  count      Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  @@unique([customerId, mode, date])
+}
+
+model UsageEvent {
+  id         String   @id @default(cuid())
+  customerId String
+  vendorId   String
+  mode       String
+  statusCode Int
+  createdAt  DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  vendor     Vendor   @relation(fields: [vendorId], references: [id])
+
+  @@index([customerId, createdAt])
+  @@index([vendorId, createdAt])
+}
+
+// Audit trail for every admin action on vendor keys and customer accounts.
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String // e.g. "vendor.key.updated", "customer.key.revoked"
+  entity    String // e.g. "vendor", "customer"
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
