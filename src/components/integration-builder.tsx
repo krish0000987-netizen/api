@@ -32,7 +32,18 @@ export function IntegrationBuilder({
 }) {
   const router = useRouter();
   const [items, setItems] = useState(() => enabled.map((e) => e.id));
+  const [prevEnabled, setPrevEnabled] = useState(enabled);
   const byId = useMemo(() => Object.fromEntries(enabled.map((e) => [e.id, e])), [enabled]);
+
+  // Keep the canvas in sync with the server. After enable/remove/reorder we
+  // call router.refresh(), which returns fresh `enabled` props — without this
+  // the client-side items list would go stale (e.g. a newly enabled service
+  // wouldn't appear until a full page reload). Local drag reorders win until
+  // the refresh lands, since `enabled` only changes when the server re-renders.
+  if (enabled !== prevEnabled) {
+    setPrevEnabled(enabled);
+    setItems(enabled.map((e) => e.id));
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -130,6 +141,7 @@ function PaletteBlock({ vendor, onAdd }: { vendor: PaletteItem; onAdd: () => voi
       ref={setNodeRef}
       {...listeners}
       {...attributes}
+      data-testid={`palette-${vendor.slug}`}
       style={{ transform: CSS.Translate.toString(transform) }}
       className={`flex items-center justify-between gap-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900 ${
         isDragging ? "opacity-50" : "cursor-grab active:cursor-grabbing"
@@ -157,6 +169,7 @@ function CanvasDrop({ isEmpty, children }: { isEmpty: boolean; children: React.R
   return (
     <div
       ref={setNodeRef}
+      data-testid="canvas"
       className={`min-h-40 rounded-lg border-2 border-dashed p-3 transition ${
         isOver
           ? "border-blue-500 bg-blue-50 dark:bg-blue-950"
@@ -181,6 +194,7 @@ function CanvasIntegration({ item, onRemove }: { item: CanvasItem; onRemove: () 
   return (
     <div
       ref={setNodeRef}
+      data-testid={`canvas-item-${item.slug}`}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={`flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900 ${
         isDragging ? "opacity-50" : ""

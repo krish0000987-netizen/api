@@ -74,6 +74,7 @@ function PriorityRow({ id, rank, name, slug }: { id: string; rank: number; name:
   return (
     <li
       ref={setNodeRef}
+      data-testid={`priority-${slug}`}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={`flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900 ${
         isDragging ? "opacity-50" : ""

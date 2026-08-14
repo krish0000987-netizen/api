@@ -20,6 +20,7 @@ function WidgetCard({ id, label, value }: Widget) {
   return (
     <div
       ref={setNodeRef}
+      data-testid={`widget-${id}`}
       style={{ transform: CSS.Transform.toString(transform), transition }}
       className={isDragging ? "z-10 opacity-60" : ""}
     >

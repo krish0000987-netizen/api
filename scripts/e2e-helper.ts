@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { getPrismaAdapter } from "../src/lib/db-adapter";
 import { generateApiKey } from "../src/lib/api-keys";
+import { encryptSecret, fingerprint } from "../src/lib/crypto";
 
 const prisma = new PrismaClient({ adapter: getPrismaAdapter(process.env.DATABASE_URL!) });
 
@@ -89,6 +90,29 @@ async function main() {
         data: { apiKeyHash: hash, apiKeyLookup: lookup, apiKeyPrefix: masked, apiKeyRevoked: false },
       });
       console.log(`CUSTOMER_KEY=${apiKey}`);
+      break;
+    }
+    case "upsert-vendor": {
+      // slug name sandboxEndpoint sandboxKey liveEndpoint liveKey [priority]
+      const [slug, name, sandboxEndpoint, sandboxKey, liveEndpoint, liveKey, priority = "0"] = args;
+      const existing = await prisma.vendor.findUnique({ where: { slug } });
+      const data = {
+        name,
+        sandboxEndpoint,
+        sandboxKeyEnc: encryptSecret(sandboxKey),
+        sandboxKeyFingerprint: fingerprint(sandboxKey),
+        liveEndpoint,
+        liveKeyEnc: encryptSecret(liveKey),
+        liveKeyFingerprint: fingerprint(liveKey),
+        priority: Number(priority),
+        enabled: true,
+      };
+      if (existing) {
+        await prisma.vendor.update({ where: { slug }, data });
+      } else {
+        await prisma.vendor.create({ data: { slug, ...data } });
+      }
+      console.log(`VENDOR_${slug.toUpperCase()}_ID=${existing?.id ?? ""}`);
       break;
     }
     case "set-customer-layout": {

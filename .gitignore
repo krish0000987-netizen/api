@@ -45,3 +45,8 @@ next-env.d.ts
 
 # agent workspace metadata
 .freebuff/
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
