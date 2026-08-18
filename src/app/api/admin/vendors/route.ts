@@ -3,6 +3,7 @@ import { getAdminSession } from "@/lib/require-admin";
 import { isSameOrigin } from "@/lib/csrf";
 import { vendorCreateSchema } from "@/lib/validation";
 import { encryptSecret, fingerprint } from "@/lib/crypto";
+import { encryptAuthConfig } from "@/lib/auth-config";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 
@@ -58,6 +59,8 @@ export async function POST(request: Request) {
   const { name, slug, sandboxEndpoint, sandboxKey, liveEndpoint, liveKey, priority, enabled } =
     parsed.data;
 
+  const auth = encryptAuthConfig(parsed.data);
+
   const vendor = await prisma.vendor.create({
     data: {
       name,
@@ -70,6 +73,12 @@ export async function POST(request: Request) {
       liveKeyFingerprint: fingerprint(liveKey),
       priority,
       enabled,
+      authType: auth.authType,
+      authHeaderName: auth.authHeaderName,
+      authQueryParam: auth.authQueryParam,
+      authBasicEnc: auth.authBasicEnc,
+      authExtraHeadersEnc: auth.authExtraHeadersEnc,
+      authOAuthEnc: auth.authOAuthEnc,
     },
     select: { id: true, name: true, sandboxKeyFingerprint: true, liveKeyFingerprint: true },
   });

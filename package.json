@@ -11,6 +11,7 @@
     "lint": "eslint",
     "seed": "tsx prisma/seed.ts",
     "seed:demo": "tsx scripts/demo-seed.ts",
+    "test": "tsx --test tests/unit/*.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

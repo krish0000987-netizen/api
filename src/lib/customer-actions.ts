@@ -251,3 +251,125 @@ export async function saveDashboardLayoutAction(layout: string[]): Promise<Actio
   });
   return { ok: true };
 }
+
+// ---- API product access (customer) ----
+
+export async function enableProductAction(productId: string): Promise<ActionResult> {
+  const session = await requireCustomer();
+  if (!session) return { ok: false, error: "Not authorized" };
+
+  const product = await prisma.apiProduct.findUnique({
+    where: { id: productId },
+    select: { id: true, vendorId: true, slug: true, status: true },
+  });
+  if (!product || product.status !== "published") {
+    return { ok: false, error: "This API is not available." };
+  }
+
+  // Enabling a product enables its provider at the vendor level.
+  const existing = await prisma.customerIntegration.findUnique({
+    where: { customerId_vendorId: { customerId: session.user.id, vendorId: product.vendorId } },
+    select: { id: true, enabled: true },
+  });
+  if (existing) {
+    if (!existing.enabled) {
+      await prisma.customerIntegration.update({ where: { id: existing.id }, data: { enabled: true } });
+    }
+  } else {
+    const position = await prisma.customerIntegration.count({ where: { customerId: session.user.id } });
+    await prisma.customerIntegration.create({
+      data: { customerId: session.user.id, vendorId: product.vendorId, position },
+    });
+  }
+
+  await logAudit({
+    actorId: session.user.id,
+    action: "customer.product.enabled",
+    entity: "customer",
+    entityId: session.user.id,
+    details: `product=${product.slug}`,
+  });
+  return { ok: true };
+}
+
+export async function disableProductAction(productId: string): Promise<ActionResult> {
+  const session = await requireCustomer();
+  if (!session) return { ok: false, error: "Not authorized" };
+
+  const product = await prisma.apiProduct.findUnique({
+    where: { id: productId },
+    select: { vendorId: true, slug: true },
+  });
+  if (!product) return { ok: false, error: "API not found" };
+
+  // Only disable if no other enabled product uses this provider.
+  const otherEnabled = await prisma.apiProduct.count({
+    where: { vendorId: product.vendorId, status: "published", id: { not: productId } },
+  });
+  if (otherEnabled > 0) {
+    // Keep the vendor integration but note it; the gateway gates per product.
+    return { ok: true };
+  }
+  await prisma.customerIntegration.deleteMany({
+    where: { customerId: session.user.id, vendorId: product.vendorId },
+  });
+  return { ok: true };
+}
+
+// ---- Secondary API keys (section 8) ----
+
+export async function createApiKeyAction(
+  name: string,
+  mode: string,
+): Promise<{ ok: true; apiKey: string; masked: string; id: string } | { ok: false; error: string }> {
+  const session = await requireCustomer();
+  if (!session) return { ok: false, error: "Not authorized" };
+  if (mode !== "sandbox" && mode !== "live") return { ok: false, error: "Mode must be sandbox or live" };
+
+  const clean = name.trim().slice(0, 100);
+  const { apiKey, hash, lookup, masked } = await generateApiKey(mode as "sandbox" | "live");
+  const row = await prisma.customerApiKey.create({
+    data: {
+      customerId: session.user.id,
+      name: clean || null,
+      apiKeyHash: hash,
+      apiKeyLookup: lookup,
+      apiKeyPrefix: masked,
+      mode,
+      status: "active",
+    },
+    select: { id: true },
+  });
+
+  await logAudit({
+    actorId: session.user.id,
+    action: "customer.key.created",
+    entity: "customer",
+    entityId: session.user.id,
+    details: `mode=${mode}, name=${clean || "unnamed"}`,
+  });
+  return { ok: true, apiKey, masked, id: row.id };
+}
+
+export async function revokeApiKeyRowAction(id: string): Promise<ActionResult> {
+  const session = await requireCustomer();
+  if (!session) return { ok: false, error: "Not authorized" };
+
+  const row = await prisma.customerApiKey.findFirst({
+    where: { id, customerId: session.user.id },
+    select: { id: true },
+  });
+  if (!row) return { ok: false, error: "API key not found" };
+
+  await prisma.customerApiKey.update({
+    where: { id },
+    data: { status: "revoked", revokedAt: new Date() },
+  });
+  await logAudit({
+    actorId: session.user.id,
+    action: "customer.key.revoked",
+    entity: "customer",
+    entityId: session.user.id,
+  });
+  return { ok: true };
+}

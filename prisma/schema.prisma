@@ -1,6 +1,10 @@
 // White-Label API Reseller Platform — Prisma schema
-// Starting point from the master build prompt, plus the audit-log table
-// and the fields the spec requires for fallback priority and saved layouts.
+//
+// The platform is a universal white-label API reseller & verification gateway:
+// admins configure any third-party REST API as an "API Product" (endpoint,
+// authentication, input fields, request/response mapping, privacy rules,
+// pricing) without writing code. The proxy gateway loads these configs from
+// the database and proxies customer requests to providers.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,18 +17,39 @@ datasource db {
   provider = "postgresql"
 }
 
+// ---- Providers (vendors) -----------------------------------------------
+// One row per upstream API provider. Holds encrypted credentials and the
+// authentication mechanism the gateway should use when calling the provider.
 model Vendor {
   id              String      @id @default(cuid())
   name            String
-  // URL slug used by the proxy gateway, e.g. "/api/v1/sms/..." -> vendor "sms".
+  // URL slug used by the legacy proxy gateway, e.g. "/api/v1/sms/..." -> vendor "sms".
   slug            String      @unique
   sandboxEndpoint String
+  // Encrypted provider secret for sandbox (AES-256-GCM). Never plaintext.
   sandboxKeyEnc   String
   // Non-reversible fingerprint (sha256 prefix) used only for masked display.
   sandboxKeyFingerprint String
   liveEndpoint    String
   liveKeyEnc      String
   liveKeyFingerprint    String
+
+  // ---- Configurable authentication (section 28) ----
+  // One of: none | bearer | api_key | basic | custom_header | query | oauth2
+  authType            String? @default("bearer")
+  // Header name for api_key / custom_header auth (e.g. "x-api-key").
+  authHeaderName      String?
+  // Query parameter name for query auth.
+  authQueryParam      String?
+  // Encrypted JSON for basic auth: {"username": "...", "password": "..."}.
+  authBasicEnc        String?
+  // Encrypted JSON array of extra request headers:
+  // [{"name":"x-api-key","value":"secret","isSecret":true}, ...]
+  authExtraHeadersEnc String?
+  // Encrypted JSON for oauth2: {"tokenUrl": "...", "clientId": "...",
+  // "clientSecret": "...", "scope": "...", "grantType": "client_credentials"}.
+  authOAuthEnc        String?
+
   // Drag-to-reorder priority: lower number = tried first when a route has
   // multiple fallback vendors configured.
   priority        Int         @default(0)
@@ -33,6 +58,11 @@ model Vendor {
   updatedAt       DateTime    @updatedAt
   usageEvents     UsageEvent[]
   integrations    CustomerIntegration[]
+  products        ApiProduct[]
+  transactions    Transaction[]
+  health          ProviderHealth?
+
+  @@index([enabled, priority])
 }
 
 model Admin {
@@ -40,6 +70,7 @@ model Admin {
   email        String   @unique
   passwordHash String
   name         String?
+  role         String   @default("admin") // super_admin | admin | support | developer | finance
   // JSON array of widget ids in the admin's preferred order (dnd-kit).
   dashboardLayout String?
   createdAt    DateTime @default(now())
@@ -52,8 +83,7 @@ model Customer {
   name             String?
   // Only for email/password sign-in (Google-only accounts have none).
   passwordHash     String?
-  // bcrypt hash of the branded API key (sk_test_... / sk_live_...). The full
-  // key is shown to the customer once and never stored in plaintext.
+  // bcrypt hash of the primary branded API key (sk_test_... / sk_live_...).
   apiKeyHash       String
   // sha256 of the API key, indexed so the proxy gateway can find the customer
   // by key in O(1) before verifying with bcrypt.
@@ -63,6 +93,8 @@ model Customer {
   apiKeyRevoked    Boolean      @default(false)
   mode             String       @default("sandbox") // "sandbox" | "live"
   plan             String       @default("free")
+  // Account balance in paise (1/100 rupee). Debited per billable request.
+  balance          Int          @default(0)
   stripeCustomerId String?
   // JSON array of widget ids in the customer's preferred order (dnd-kit).
   dashboardLayout  String?
@@ -71,6 +103,33 @@ model Customer {
   usageEvents      UsageEvent[]
   dailyUsage       DailyUsage[]
   integrations     CustomerIntegration[]
+  apiKeys          CustomerApiKey[]
+  transactions     Transaction[]
+  pricingRules     PricingRule[]
+  webhooks         Webhook[]
+
+  @@index([apiKeyLookup])
+}
+
+// Secondary (additional) branded API keys — the legacy single-key fields on
+// Customer remain the "primary" key for backward compatibility. All keys are
+// stored as bcrypt hashes with a sha256 lookup index; never plaintext.
+model CustomerApiKey {
+  id            String   @id @default(cuid())
+  customerId    String
+  name          String? // e.g. "Production app", "Staging service"
+  apiKeyHash    String
+  apiKeyLookup  String   @unique
+  apiKeyPrefix  String?
+  mode          String   @default("sandbox")
+  status        String   @default("active") // active | revoked
+  createdAt     DateTime @default(now())
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, status])
+  @@index([mode])
 }
 
 // A vendor service enabled on a customer's account (the Integration Builder).
@@ -88,6 +147,191 @@ model CustomerIntegration {
   @@unique([customerId, vendorId])
 }
 
+// ---- API Products (section 10, 27) --------------------------------------
+// A resellable API. A provider can offer many products and the same logical
+// API can be offered by multiple providers as separate product records.
+model ApiProduct {
+  id          String   @id @default(cuid())
+  vendorId    String
+  // Internal machine name, e.g. "aadhaar-verification".
+  name        String
+  displayName String
+  // Gateway route segment: /api/v1/{slug}. Versioned via the `version` field.
+  slug        String
+  version     String   @default("v1")
+  category    String?
+  description String?
+  logo        String?
+  providerWebsite String?
+  status      String   @default("draft") // draft | published | disabled
+  supportsSandbox Boolean @default(true)
+  supportsLive    Boolean @default(true)
+
+  // Provider request definition.
+  method          String @default("POST") // GET POST PUT PATCH DELETE
+  baseUrl         String // e.g. https://apis.coincircletrust.com
+  endpointPath    String // e.g. /apiProduct/aadhaar-verify
+  requestBodyType String @default("json") // json | form | urlencoded | raw | none
+  // Request body template with {{variable}} placeholders.
+  requestBodyTemplate Json?
+  // [{name, value}] query parameters, values may contain {{variable}}.
+  queryParams         Json?
+  // [{name, value}] path parameter overrides.
+  pathParams          Json?
+  // Static extra request headers for this product (names may collide with
+  // auth headers — auth wins for same-name headers).
+  headers             Json?
+
+  // Response handling.
+  responseMode   String @default("raw") // raw | normalized
+  // Normalized response template (JSON) with {{field}} placeholders resolved
+  // from the mapped customer fields.
+  normalizedResponseSchema Json?
+  // Error normalization rules: [{match:{...}, code, message}].
+  errorMappings          Json?
+
+  // Fallback providers (section 11).
+  fallbackEnabled    Boolean @default(false)
+  fallbackRetryCount Int     @default(1)
+  fallbackTimeoutMs  Int     @default(5000)
+  // Comma-separated vendor ids tried in priority order after the primary.
+  fallbackVendorIds  String?
+
+  // Pricing (in paise, 1/100 rupee). Customer-specific overrides live in PricingRule.
+  defaultCost  Int @default(0)
+  defaultPrice Int @default(0)
+  // Billing policy: per_request | per_success | per_failure | subscription | credits
+  billingModel String @default("per_request")
+  // Whether a successful provider call is billed before the response is returned.
+  billOnSuccess Boolean @default(true)
+
+  // Privacy/compliance (sections 22).
+  requireConsent    Boolean @default(false)
+  dataRetentionDays Int?
+  // JSON config: {"logResponse": false, "storeResponse": false}
+  privacyConfig     Json?
+
+  versionOf   String? // base product id this is a version of (null = primary)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  fields    ApiField[]
+  mappings  ApiResponseMapping[]
+  pricingRules  PricingRule[]
+  usageEvents   UsageEvent[]
+  transactions  Transaction[]
+  documentation ApiDocumentation[]
+  webhooks      Webhook[]
+
+  @@unique([slug, version])
+  @@index([vendorId])
+  @@index([status])
+}
+
+// Input field definition (section 5, 22) — each product has its own schema.
+model ApiField {
+  id            String   @id @default(cuid())
+  productId     String
+  name          String   // display name, e.g. "Aadhaar Number"
+  variable      String   // template variable, e.g. "aadhaar_number"
+  type          String   @default("text") // text number email phone date datetime boolean select textarea file json
+  description   String?
+  required      Boolean  @default(false)
+  sensitive     Boolean  @default(false)
+  store         Boolean  @default(false)
+  mask          Boolean  @default(false)
+  log           Boolean  @default(false)
+  returnToCustomer Boolean @default(true)
+  validation    String?  // regex
+  minLength     Int?
+  maxLength     Int?
+  minValue      Float?
+  maxValue      Float?
+  defaultValue  String?
+  placeholder   String?
+  example       String?
+  enumOptions   Json?    // string[] for select
+  position      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  product       ApiProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+}
+
+// Response mapping rules (section 3): provider field path -> customer field.
+model ApiResponseMapping {
+  id            String   @id @default(cuid())
+  productId     String
+  providerPath  String   // dot/JSONPath path into the provider response, e.g. "data.full_name"
+  customerField String   // field name in the customer-facing response, e.g. "name"
+  fieldType     String   @default("string") // string number boolean array object any
+  // Masking: none | full | partial | hidden. `partial` uses maskRule regex
+  // (e.g. Aadhaar: ^(.{4}).*(.{4})$ -> $1...$2).
+  mask      Boolean @default(false)
+  maskRule  String?
+  // Transform: none | uppercase | lowercase | boolean_to_status | trim | template
+  transform String? @default("none")
+  // Optional template used when transform = "template", e.g. "Verified: {{value}}".
+  template String?
+  // Where the mapped value appears in the customer response:
+  // top | nested (nested uses customerPath for dot-separated placement).
+  placement String @default("top")
+  // Dot-separated path for nested placement, e.g. "data.identity".
+  customerPath String?
+  required  Boolean @default(false)
+  position  Int     @default(0)
+  createdAt DateTime @default(now())
+  product   ApiProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+}
+
+// Pricing overrides (section 13): null customerId = default price.
+model PricingRule {
+  id         String   @id @default(cuid())
+  productId  String
+  customerId String?
+  price      Int      @default(0) // paise
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  product    ApiProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customer   Customer?  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, customerId])
+  @@index([customerId])
+}
+
+// ---- Transactions (section 15) -------------------------------------------
+// One record per gateway request. request_id is exposed to customers.
+model Transaction {
+  id          String   @id @default(cuid())
+  requestId   String   @unique // req_xxx
+  customerId  String
+  apiProductId String?
+  vendorId    String
+  status      String   // success | failed | error | pending | retried
+  httpStatus  Int?
+  environment String   @default("sandbox")
+  cost        Int      @default(0) // paise
+  price       Int      @default(0) // paise
+  profit      Int      @default(0)
+  responseTimeMs Int?
+  errorCode   String?
+  // Masked/sensitive info is never stored here. Optional reference for
+  // reconciliation (never full Aadhaar/PAN).
+  externalRef String?
+  createdAt   DateTime @default(now())
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  apiProduct  ApiProduct? @relation(fields: [apiProductId], references: [id])
+  vendor      Vendor   @relation(fields: [vendorId], references: [id])
+
+  @@index([customerId, createdAt])
+  @@index([apiProductId, createdAt])
+  @@index([vendorId, createdAt])
+}
+
 // Nightly aggregation of Redis usage counters (historical reporting/billing).
 model DailyUsage {
   id         String   @id @default(cuid())
@@ -103,29 +347,99 @@ model DailyUsage {
 }
 
 model UsageEvent {
-  id         String   @id @default(cuid())
-  customerId String
-  vendorId   String
-  mode       String
-  statusCode Int
-  createdAt  DateTime @default(now())
-  customer   Customer @relation(fields: [customerId], references: [id])
-  vendor     Vendor   @relation(fields: [vendorId], references: [id])
+  id           String   @id @default(cuid())
+  customerId   String
+  vendorId     String
+  apiProductId String?
+  requestId    String?
+  mode         String
+  environment  String   @default("sandbox")
+  statusCode   Int
+  status       String?  // success | failed | error
+  errorCode    String?
+  cost         Int      @default(0)
+  price        Int      @default(0)
+  profit       Int      @default(0)
+  responseTimeMs Int?
+  createdAt    DateTime @default(now())
+  customer     Customer @relation(fields: [customerId], references: [id])
+  vendor       Vendor   @relation(fields: [vendorId], references: [id])
+  apiProduct   ApiProduct? @relation(fields: [apiProductId], references: [id])
 
   @@index([customerId, createdAt])
   @@index([vendorId, createdAt])
+  @@index([apiProductId, createdAt])
+  @@index([createdAt])
 }
 
-// Audit trail for every admin action on vendor keys and customer accounts.
+// Audit trail for every admin action (section 23).
 model AuditLog {
   id        String   @id @default(cuid())
   actorId   String?
-  action    String // e.g. "vendor.key.updated", "customer.key.revoked"
-  entity    String // e.g. "vendor", "customer"
+  action    String // e.g. "api.product.published", "vendor.key.updated"
+  entity    String // e.g. "vendor", "api_product", "customer"
   entityId  String?
   details   String?
   createdAt DateTime @default(now())
 
   @@index([entity, entityId])
   @@index([createdAt])
+}
+
+// Provider health monitoring (section 25).
+model ProviderHealth {
+  id              String   @id @default(cuid())
+  vendorId        String
+  status          String   @default("unknown") // healthy | degraded | down | unknown
+  successRate     Float    @default(100)
+  avgResponseMs   Int      @default(0)
+  totalRequests   Int      @default(0)
+  failedRequests  Int      @default(0)
+  lastSuccessAt   DateTime?
+  lastFailureAt   DateTime?
+  lastError       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  vendor          Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId])
+}
+
+// Auto-generated documentation per API product (section 17).
+model ApiDocumentation {
+  id        String   @id @default(cuid())
+  productId String
+  visibility String  @default("private") // public | private
+  markdown  String?
+  json      Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product   ApiProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId])
+}
+
+// Customer webhooks for asynchronous results (section 16).
+model Webhook {
+  id         String   @id @default(cuid())
+  customerId String
+  apiProductId String?
+  url        String
+  method     String   @default("POST")
+  // Encrypted JSON of static headers: {"Content-Type": "application/json", ...}
+  headersEnc String?
+  // Encrypted JSON of auth config: {"type":"bearer","token":"...","headerName":"x-api-key"}
+  authConfigEnc String?
+  retryCount Int      @default(0)
+  timeoutMs  Int      @default(5000)
+  // Encrypted secret used to sign outgoing webhook payloads.
+  signatureSecretEnc String?
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  apiProduct ApiProduct? @relation(fields: [apiProductId], references: [id], onDelete: SetNull)
+
+  @@index([customerId])
+  @@index([apiProductId])
 }

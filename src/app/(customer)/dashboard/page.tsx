@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { ApiKeyPanel } from "@/components/customer/api-key-panel";
+import { ApiKeysManager } from "@/components/customer/api-keys-manager";
 import { DailyBarChart } from "@/components/charts";
 import { SortableWidgetGrid } from "@/components/sortable-widget-grid";
 import { saveDashboardLayoutAction } from "@/lib/customer-actions";
@@ -26,6 +27,15 @@ export default async function CustomerDashboardPage() {
   } | null = null;
   let daily: Array<{ day: string; count: number }> = [];
   let modeTotals: Array<{ mode: string; total: number }> = [];
+  let secondaryKeys: Array<{
+    id: string;
+    name: string | null;
+    apiKeyPrefix: string | null;
+    mode: string;
+    status: string;
+    lastUsedAt: Date | null;
+    createdAt: Date;
+  }> = [];
   let dbError = false;
 
   try {
@@ -43,7 +53,7 @@ export default async function CustomerDashboardPage() {
       },
     });
 
-    const [dailyRows, modeRows] = await Promise.all([
+    const [dailyRows, modeRows, keyRows] = await Promise.all([
       prisma.$queryRaw<Array<{ day: string; count: number }>>`
         SELECT to_char(date_trunc('day', "createdAt"), 'YYYY-MM-DD') AS day,
                COUNT(*)::int AS count
@@ -58,9 +68,23 @@ export default async function CustomerDashboardPage() {
         WHERE "customerId" = ${session.user.id}
         GROUP BY mode
       `,
+      prisma.customerApiKey.findMany({
+        where: { customerId: session.user.id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          apiKeyPrefix: true,
+          mode: true,
+          status: true,
+          lastUsedAt: true,
+          createdAt: true,
+        },
+      }),
     ]);
     daily = dailyRows;
     modeTotals = modeRows;
+    secondaryKeys = keyRows;
   } catch (error) {
     console.error("Dashboard DB error:", error);
     dbError = true;
@@ -95,6 +119,21 @@ export default async function CustomerDashboardPage() {
       <section className="rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-800 dark:bg-gray-900">
         <h2 className="mb-4 text-lg font-semibold">API key</h2>
         <ApiKeyPanel mode={mode} masked={customer.apiKeyPrefix} revoked={customer.apiKeyRevoked} />
+      </section>
+
+      <section className="rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-800 dark:bg-gray-900">
+        <h2 className="mb-4 text-lg font-semibold">Secondary API keys</h2>
+        <p className="mb-4 text-sm text-gray-500">
+          Create extra keys per app or service. Each key works exactly like your
+          primary key and can be revoked independently.
+        </p>
+        <ApiKeysManager
+          keys={secondaryKeys.map((k) => ({
+            ...k,
+            lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+            createdAt: k.createdAt.toISOString(),
+          }))}
+        />
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-800 dark:bg-gray-900">

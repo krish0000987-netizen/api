@@ -20,6 +20,9 @@ export default async function EditVendorPage({ params }: { params: Promise<{ id:
     liveEndpoint: string;
     priority: number;
     enabled: boolean;
+    authType: string | null;
+    authHeaderName: string | null;
+    authQueryParam: string | null;
   } | null = null;
   let dbError = false;
 
@@ -34,6 +37,9 @@ export default async function EditVendorPage({ params }: { params: Promise<{ id:
         liveEndpoint: true,
         priority: true,
         enabled: true,
+        authType: true,
+        authHeaderName: true,
+        authQueryParam: true,
       },
     });
   } catch (error) {

@@ -18,6 +18,9 @@ export default async function CustomerLayout({ children }: { children: React.Rea
                 <Link href="/dashboard" className="hover:text-blue-600">
                   Dashboard
                 </Link>
+                <Link href="/apis" className="hover:text-blue-600">
+                  Available APIs
+                </Link>
                 <Link href="/integrations" className="hover:text-blue-600">
                   Integration Builder
                 </Link>

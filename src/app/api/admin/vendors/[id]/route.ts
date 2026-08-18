@@ -3,6 +3,7 @@ import { getAdminSession } from "@/lib/require-admin";
 import { isSameOrigin } from "@/lib/csrf";
 import { vendorUpdateSchema } from "@/lib/validation";
 import { encryptSecret, fingerprint } from "@/lib/crypto";
+import { encryptAuthConfig } from "@/lib/auth-config";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 
@@ -39,7 +40,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
   }
 
-  const data: Record<string, string | number | boolean> = {};
+  const data: Record<string, string | number | boolean | null> = {};
   if (parsed.data.name !== undefined) data.name = parsed.data.name;
   if (parsed.data.slug !== undefined) data.slug = parsed.data.slug;
   if (parsed.data.sandboxEndpoint !== undefined) data.sandboxEndpoint = parsed.data.sandboxEndpoint;
@@ -54,6 +55,24 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   if (parsed.data.liveKey !== undefined) {
     data.liveKeyEnc = encryptSecret(parsed.data.liveKey);
     data.liveKeyFingerprint = fingerprint(parsed.data.liveKey);
+  }
+  // Auth config: only overwrite the authType when provided; secrets are only
+  // re-encrypted when the admin supplies them.
+  if (parsed.data.authType !== undefined) {
+    const auth = encryptAuthConfig({
+      authType: parsed.data.authType,
+      authHeaderName: parsed.data.authHeaderName ?? null,
+      authQueryParam: parsed.data.authQueryParam ?? null,
+      authBasic: parsed.data.authBasic,
+      authExtraHeaders: parsed.data.authExtraHeaders,
+      authOAuth: parsed.data.authOAuth,
+    });
+    data.authType = auth.authType;
+    data.authHeaderName = auth.authHeaderName;
+    data.authQueryParam = auth.authQueryParam;
+    if (auth.authBasicEnc) data.authBasicEnc = auth.authBasicEnc;
+    if (auth.authExtraHeadersEnc) data.authExtraHeadersEnc = auth.authExtraHeadersEnc;
+    if (auth.authOAuthEnc) data.authOAuthEnc = auth.authOAuthEnc;
   }
 
   const vendor = await prisma.vendor.update({
